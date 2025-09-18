@@ -334,45 +334,184 @@ describe('fs_validations', () => {
           )
         ).toThrow('Unsafe path detected');
       });
+    });
 
-      it('should reject paths with non-standard but normalized traversal patterns', () => {
-        // Unusual patterns that normalize to ../
-        const unusualTraversalPath = path.join(
+    it('should handle non-string inputs by converting them to strings', () => {
+      const pathObj = { toString: () => path.join(REPO_ROOT, 'data', 'file.txt') };
+      expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory(pathObj)).not.toThrow();
+
+      const badPathObj = { toString: () => '/etc/passwd' };
+      expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory(badPathObj)).toThrow(
+        'Unsafe path detected'
+      );
+    });
+
+    it('should accept exact safe path matches', () => {
+      const exactSafePath = path.join(REPO_ROOT, 'data');
+      expect(() =>
+        validations.validatePathIsSubdirectoryOfSafeDirectory(exactSafePath)
+      ).not.toThrow();
+    });
+
+    describe('minimatch pattern support', () => {
+      beforeAll(() => {
+        // Add a glob pattern to safe paths for testing
+        fsEventBus.emit(FS_CONFIG_EVENT, {
+          safe_paths: [path.join(REPO_ROOT, 'test-*'), path.join(REPO_ROOT, '**/allowed/**')],
+          enabled: true,
+        });
+      });
+
+      it('should accept paths matching glob patterns in safe paths', () => {
+        const globMatchPath1 = path.join(REPO_ROOT, 'test-folder', 'file.txt');
+        const globMatchPath2 = path.join(REPO_ROOT, 'test-123', 'subdir', 'file.txt');
+
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(globMatchPath1)
+        ).not.toThrow();
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(globMatchPath2)
+        ).not.toThrow();
+      });
+
+      it('should accept paths matching nested glob patterns', () => {
+        const nestedGlobPath1 = path.join(REPO_ROOT, 'some', 'allowed', 'file.txt');
+        const nestedGlobPath2 = path.join(
           REPO_ROOT,
-          'data',
-          '...',
-          '....',
-          '.....',
-          'etc',
-          'passwd'
+          'deep',
+          'nested',
+          'allowed',
+          'subdir',
+          'file.txt'
         );
-        const normalizedUnusualPath = path.normalize(unusualTraversalPath);
 
-        // If this passes through the first validation step (which might reject it before normalization)
-        // it should be caught by this function after normalization
-        try {
-          validations.validatePathIsSubdirectoryOfSafeDirectory(normalizedUnusualPath);
-          // eslint-disable-next-line no-undef
-          fail('Path traversal with unusual pattern should be rejected');
-        } catch (error) {
-          expect(error.message).toContain('Unsafe path');
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(nestedGlobPath1)
+        ).not.toThrow();
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(nestedGlobPath2)
+        ).not.toThrow();
+      });
+
+      it('should reject paths that do not match glob patterns', () => {
+        const nonMatchingPath1 = path.join(REPO_ROOT, 'test', 'file.txt'); // Missing dash after 'test'
+        const nonMatchingPath2 = path.join(REPO_ROOT, 'not-allowed', 'file.txt');
+
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(nonMatchingPath1)
+        ).toThrow('Unsafe path detected');
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(nonMatchingPath2)
+        ).toThrow('Unsafe path detected');
+      });
+    });
+
+    describe('relative path handling', () => {
+      it('should handle relative paths correctly', () => {
+        // Test with relative paths that resolve to safe directories
+        const relativePath = path.relative(process.cwd(), path.join(REPO_ROOT, 'data', 'file.txt'));
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(relativePath)
+        ).not.toThrow();
+      });
+
+      it('should reject relative paths that resolve outside safe directories', () => {
+        const unsafeRelativePath = path.relative(process.cwd(), '/etc/passwd');
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(unsafeRelativePath)
+        ).toThrow('Unsafe path detected');
+      });
+    });
+
+    describe('symlink and canonical path handling', () => {
+      it('should handle paths with .. that stay within safe directories', () => {
+        const safeTraversalPath = path.join(REPO_ROOT, 'data', 'subdir', '..', 'file.txt');
+        const normalizedPath = path.normalize(safeTraversalPath);
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(normalizedPath)
+        ).not.toThrow();
+      });
+
+      it('should reject paths with multiple .. that escape safe directories', () => {
+        const escapeTraversalPath = path.join(REPO_ROOT, 'data', '..', '..', 'etc', 'passwd');
+        const normalizedPath = path.normalize(escapeTraversalPath);
+        expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory(normalizedPath)).toThrow(
+          'Unsafe path detected'
+        );
+      });
+    });
+
+    describe('case sensitivity and cross-platform compatibility', () => {
+      it('should handle case-sensitive paths on Unix-like systems', () => {
+        if (process.platform !== 'win32') {
+          const caseSensitivePath = path.join(REPO_ROOT, 'DATA', 'file.txt'); // Wrong case
+          expect(() =>
+            validations.validatePathIsSubdirectoryOfSafeDirectory(caseSensitivePath)
+          ).toThrow('Unsafe path detected');
         }
       });
 
-      it('should reject paths using symlink-like syntax that might bypass filters', () => {
-        // Path that looks like it might attempt to use a symlink to escape
-        const symlinkLikePath = path.join(REPO_ROOT, 'data', '@..', '@..', 'etc', 'passwd');
-
-        // Even if this syntax has no special meaning, if it tries to exit the safe directory after normalization
-        // it should be caught
-        try {
-          validations.validatePathIsSubdirectoryOfSafeDirectory(path.normalize(symlinkLikePath));
-          // eslint-disable-next-line no-undef
-          fail('Symlink-like traversal should be rejected');
-        } catch (error) {
-          // Either we'll get a path traversal error or an unsafe path error
-          expect(error.message).toMatch(/Unsafe path|traversal/);
+      it('should handle Windows-style paths on Windows', () => {
+        if (process.platform === 'win32') {
+          const windowsPath = path.join(REPO_ROOT, 'data', 'file.txt').replace(/\//g, '\\');
+          expect(() =>
+            validations.validatePathIsSubdirectoryOfSafeDirectory(windowsPath)
+          ).not.toThrow();
         }
+      });
+    });
+
+    describe('edge cases and boundary conditions', () => {
+      it('should handle empty string paths', () => {
+        expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory('')).toThrow(
+          'Unsafe path detected'
+        );
+      });
+
+      it('should handle root path', () => {
+        expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory('/')).toThrow(
+          'Unsafe path detected'
+        );
+      });
+
+      it('should handle very long paths within safe directories', () => {
+        const longPath = path.join(REPO_ROOT, 'data', 'a'.repeat(255), 'file.txt');
+        expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory(longPath)).not.toThrow();
+      });
+
+      it('should handle paths with special characters within safe directories', () => {
+        const specialCharPath = path.join(REPO_ROOT, 'data', 'file with spaces & symbols!@#$.txt');
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(specialCharPath)
+        ).not.toThrow();
+      });
+    });
+
+    describe('performance and security edge cases', () => {
+      it('should handle paths with many directory separators', () => {
+        const manySlashesPath = path.join(
+          REPO_ROOT,
+          'data',
+          'a',
+          'b',
+          'c',
+          'd',
+          'e',
+          'f',
+          'g',
+          'file.txt'
+        );
+        expect(() =>
+          validations.validatePathIsSubdirectoryOfSafeDirectory(manySlashesPath)
+        ).not.toThrow();
+      });
+
+      it('should reject paths attempting to bypass with null characters in toString', () => {
+        const maliciousObj = {
+          toString: () => path.join(REPO_ROOT, 'data', 'file.txt') + '\0../../../etc/passwd',
+        };
+        // This should be caught by validateNoPathTraversal, but let's ensure our function handles it
+        expect(() => validations.validatePathIsSubdirectoryOfSafeDirectory(maliciousObj)).toThrow();
       });
     });
   });

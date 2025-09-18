@@ -13,6 +13,7 @@ const { join, resolve, sep } = require('path');
 const { REPO_ROOT } = require('@kbn/repo-info');
 const { tmpdir, homedir } = require('os');
 const { realpathSync } = require('fs');
+const minimatch = require('minimatch');
 const { sanitizeSvg } = require('./fs_sanitizations');
 const { fsEventBus, FS_CONFIG_EVENT } = require('@kbn/security-hardening/fs-event-bus');
 
@@ -134,26 +135,39 @@ function validateFileExtension(path) {
 }
 
 function validatePathIsSubdirectoryOfSafeDirectory(path) {
-  // Check if the path is actually a subdirectory of any safe path
-  const isSafePath = safePaths.some((safePath) => {
-    // Path exactly matches a safe path
-    if (path === safePath) {
-      return true;
+  // Force string conversion to handle objects with toString methods
+  path = String(path);
+
+  // Normalize the path to ensure consistent comparison
+  const normalizedPath = resolve(path);
+  // Check if the path is equivalent to or a subdirectory of any safe path
+  for (const safePath of safePaths) {
+    const normalizedSafePath = resolve(safePath);
+
+    // Check if path is exactly the safe path
+    if (normalizedPath === normalizedSafePath) {
+      return;
     }
 
-    // Path is a subdirectory of a safe path - must start with safe path followed by a separator
-    if (path.startsWith(safePath)) {
-      const nextChar = path.charAt(safePath.length);
-      // Check if the next character after the safe path is a path separator (/ or \)
-      return nextChar === sep;
+    // Check if path is a subdirectory of the safe path
+    // Ensure the safe path ends with a separator to avoid partial matches
+    const safePathWithSep = normalizedSafePath + sep;
+    if (normalizedPath.startsWith(safePathWithSep)) {
+      return;
     }
 
-    return false;
-  });
-
-  if (!isSafePath) {
-    throw new Error(`Unsafe path detected: "${path}".`);
+    // Also check using minimatch for pattern matching
+    // This handles cases where safePath might contain glob patterns
+    if (
+      minimatch(normalizedPath, normalizedSafePath) ||
+      minimatch(normalizedPath, normalizedSafePath + '/**')
+    ) {
+      return;
+    }
   }
+
+  // If we get here, the path is not within any safe directory
+  throw new Error('Unsafe path detected');
 }
 
 /**
