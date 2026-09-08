@@ -7,8 +7,6 @@
  * License v3.0 only", or the "Server Side Public License, v 1".
  */
 
-/* eslint-disable */
-
 // Cross-file helpers used by test.js to exercise interprocedural + cross-file value
 // flow — the cases the ESLint rule cannot see.
 
@@ -16,5 +14,4 @@
 export const makeUnsafeDeletePath = (id: string): string => `/api/things/${id}`;
 
 // Safe: encodes the segment before returning.
-export const makeSafeDeletePath = (id: string): string =>
-  `/api/things/${encodeURIComponent(id)}`;
+export const makeSafeDeletePath = (id: string): string => `/api/things/${encodeURIComponent(id)}`;
