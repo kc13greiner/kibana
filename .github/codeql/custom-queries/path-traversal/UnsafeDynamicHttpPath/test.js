@@ -69,6 +69,15 @@ http.delete(buildDeletePath(id)); // $ Alert
 // BAD: path built by a helper in ANOTHER file (cross-file)
 http.delete(makeUnsafeDeletePath(id)); // $ Alert
 
+// BAD: path accumulated with `+=` across statements
+let accumulated = '/api/dashboards';
+accumulated += `/${id}`;
+http.delete(accumulated); // $ Alert
+
+// BAD: path assembled with Array#join and a non-empty separator
+const joinedPath = [INTERNAL_ROUTES.BASE, id].join('/');
+http.get(joinedPath); // $ Alert
+
 // =============================================================================
 // GOOD: should NOT be reported
 // =============================================================================
@@ -96,3 +105,22 @@ http.delete(safePath);
 
 // GOOD: cross-file helper that encodes before returning
 http.delete(makeSafeDeletePath(id));
+
+// GOOD: encodeURIComponent hoisted into a variable before being interpolated
+const encodedId = encodeURIComponent(id);
+http.get(`/api/dashboards/${encodedId}`);
+http.delete('/api/dashboards/' + encodedId);
+
+// GOOD: buildPath() result hoisted into a variable, then concatenated
+const builtPath = buildPath('/api/dashboards/{id}', { id });
+http.get(INTERNAL_ROUTES.BASE + builtPath);
+
+// GOOD: non-string literal segments are constants, not user input
+http.get(`/api/dashboards/${1}`);
+http.get('/api/dashboards/' + 1);
+
+// GOOD: join over an encoded segment
+http.get([INTERNAL_ROUTES.BASE, encodeURIComponent(id)].join('/'));
+
+// GOOD: join over constant-only segments
+http.get([INTERNAL_ROUTES.BASE, 'status'].join('/'));

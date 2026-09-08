@@ -3,7 +3,7 @@
 - **ID**: `js/kibana/unsafe-dynamic-http-path`
 - **Kind**: `path-problem` (data-flow)
 - **Severity**: Error (security-severity 7.5)
-- **Description**: Detects a dynamically-built string (template literal or concatenation) that flows into the path of a browser `http.*` request without `buildPath()` (`@kbn/core-http-browser`) or `encodeURIComponent()`. Unencoded path parameters allow path traversal / IDOR.
+- **Description**: Detects a dynamically-built string (template literal, `+` concatenation, `+=` accumulation or `[...].join(sep)`) that flows into the path of a browser `http.*` request without `buildPath()` (`@kbn/core-http-browser`) or `encodeURIComponent()`. Unencoded path parameters allow path traversal / IDOR.
 
 This is the data-flow companion to the `@kbn/eslint/no_unsafe_dynamic_http_path` ESLint rule. The ESLint rule only checks the inline path expression at the call site; this query follows the value across variables, helper-function returns, and files.
 
@@ -28,4 +28,6 @@ This is the data-flow companion to the `@kbn/eslint/no_unsafe_dynamic_http_path`
 ## Notes
 
 - Kibana's CodeQL analysis runs with `CODEQL_EXTRACTOR_JAVASCRIPT_OPTION_SKIP_TYPES`, so the `http` receiver and path argument are matched syntactically (identifier `http`, or any property access ending in `.http`), mirroring the ESLint rule.
-- `buildPath()` and `encodeURIComponent()` results break the flow and are not reported. Non-`http` receivers (e.g. `client.delete(...)`) are not matched.
+- `buildPath()` and `encodeURIComponent()` results break the flow and are not reported, whether called inline or assigned to a variable first. Non-`http` receivers (e.g. `client.delete(...)`) are not matched.
+- Literal segments are safe, so `` `/api/x/${1}` `` is not reported, matching the ESLint rule's handling of literals.
+- Known gaps: an array assembled through `push`/`filter` before `join`, and a path whose only dynamic part is a bare variable that was never constructed (`http.get(props.href)`), are not reported.

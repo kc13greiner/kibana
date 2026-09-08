@@ -3,8 +3,10 @@
 
 <overview>
 <p>
-This query detects a dynamically-constructed string — a template literal or a string
-concatenation — that flows into the path of a browser <code>http.*</code> request
+This query detects a dynamically-constructed string — a template literal, a string
+concatenation (including <code>+=</code> accumulation), or an
+<code>[...].join(sep)</code> — that flows into the path of a browser
+<code>http.*</code> request
 (<code>http.get</code>, <code>http.post</code>, <code>http.delete</code>,
 <code>http.fetch</code>, etc.) without being encoded through
 <code>buildPath()</code> (from <code>@kbn/core-http-browser</code>) or
@@ -91,7 +93,7 @@ const deleteDashboard = (id: string) =>
   <a href="https://cwe.mitre.org/data/definitions/22.html">CWE-22: Improper Limitation of a Pathname to a Restricted Directory ('Path Traversal')</a>
 </li>
 <li>
-  <a href="https://cwe.mitre.org/data/definitions/88.html">CWE-88: Improper Neutralization of Argument Delimiters in a Command ('Argument Injection')</a>
+  <a href="https://cwe.mitre.org/data/definitions/99.html">CWE-99: Improper Control of Resource Identifiers ('Resource Injection')</a>
 </li>
 <li>
   <a href="https://owasp.org/www-community/attacks/Path_Traversal">OWASP: Path Traversal</a>

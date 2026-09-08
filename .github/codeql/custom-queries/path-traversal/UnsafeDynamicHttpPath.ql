@@ -1,8 +1,8 @@
 /**
  * @name Unsafe dynamic HTTP request path
- * @description Detects a dynamically-constructed string (template literal or
- *              concatenation) that flows into the path of a browser `http.*`
- *              request without being encoded via `buildPath()`
+ * @description Detects a dynamically-constructed string (template literal,
+ *              concatenation or `join`) that flows into the path of a browser
+ *              `http.*` request without being encoded via `buildPath()`
  *              (`@kbn/core-http-browser`) or `encodeURIComponent()`. Unencoded
  *              path parameters allow path traversal / IDOR (e.g. an `id` of
  *              `../../../internal/security/users/foo`).
@@ -15,7 +15,7 @@
  *       kibana
  *       path-injection
  *       external/cwe/cwe-022
- *       external/cwe/cwe-088
+ *       external/cwe/cwe-099
  */
 
 /*
@@ -48,6 +48,18 @@ predicate isEncodeOrBuildPathCall(Expr e) {
 }
 
 /**
+ * Holds if the value of `e` comes from an `encodeURIComponent(...)` / `buildPath(...)`
+ * call, even when it was assigned to a variable first
+ * (`const encoded = encodeURIComponent(id); ... `/x/${encoded}``). The unsafe side of
+ * this query follows values across assignments, so the safe side has to as well -
+ * otherwise hoisting the encode call out of the template turns an already-correct call
+ * site into a false positive.
+ */
+predicate isEncodedValue(Expr e) {
+  isEncodeOrBuildPathCall(DataFlow::valueNode(e).getALocalSource().asExpr())
+}
+
+/**
  * A screaming-case identifier (`INTERNAL_ROUTES`, `MY_CONSTANT`) or a property-access
  * chain rooted in one (`INTERNAL_ROUTES.JOBS.DELETE_PREFIX`). Treated as a constant,
  * non-user-controllable path prefix, consistent with the ESLint rule.
@@ -60,13 +72,20 @@ predicate isConstantPrefixRef(Expr e) {
 
 /**
  * Holds if `e` is a path fragment that cannot introduce an unencoded, user-controllable
- * segment: a string literal, an `encodeURIComponent`/`buildPath` result, a constant
- * prefix reference, or a template/concatenation/conditional composed only of safe parts.
+ * segment: a literal, an `encodeURIComponent`/`buildPath` result (inline or via a
+ * variable), a constant prefix reference, or a template/concatenation/conditional
+ * composed only of safe parts.
+ *
+ * `Literal` rather than `StringLiteral` so a numeric or boolean segment (`` `/x/${1}` ``)
+ * is safe, matching `no_unsafe_dynamic_http_path`'s `isSafePathSegmentExpression`.
+ * `TemplateLiteral` is not a `Literal`, so this does not whitelist templates.
  */
 predicate isSafePathSegment(Expr e) {
-  e instanceof StringLiteral
+  e instanceof Literal
   or
   isEncodeOrBuildPathCall(e)
+  or
+  isEncodedValue(e)
   or
   isConstantPrefixRef(e)
   or
@@ -97,12 +116,25 @@ predicate templateHasInterpolation(TemplateLiteral t) {
 }
 
 /**
+ * An `[...].join(sep)` call whose array has at least one unsafe element. The shared
+ * `StringConcatenation` library only models `join` with an empty separator, so a path
+ * assembled as `[BASE, id].join('/')` needs its own source.
+ */
+predicate isUnsafeJoinPath(Expr e) {
+  exists(DataFlow::ArrayCreationNode arr, DataFlow::MethodCallNode call |
+    e = call.asExpr() and
+    call = arr.getAMethodCall("join") and
+    exists(DataFlow::Node el | el = arr.getAnElement() and not isSafePathSegment(el.asExpr()))
+  )
+}
+
+/**
  * An expression that builds a path dynamically with at least one unsafe (non-literal,
- * non-encoded, non-constant) segment: an interpolated template literal or a `+`
- * concatenation that is not fully sanitized. Only those that actually reach an
- * `http.*` path sink are reported, so unrelated concatenations are never surfaced.
- * Conditionals are intentionally not sources: each branch is its own source and flows
- * through the conditional to the sink.
+ * non-encoded, non-constant) segment: an interpolated template literal, a `+`
+ * concatenation that is not fully sanitized, or an `[...].join(sep)` over unsafe parts.
+ * Only those that actually reach an `http.*` path sink are reported, so unrelated
+ * concatenations are never surfaced. Conditionals are intentionally not sources: each
+ * branch is its own source and flows through the conditional to the sink.
  */
 predicate isUnsafeDynamicPath(Expr e) {
   (
@@ -111,6 +143,8 @@ predicate isUnsafeDynamicPath(Expr e) {
     e instanceof AddExpr
   ) and
   not isSafePathSegment(e)
+  or
+  isUnsafeJoinPath(e)
 }
 
 /* ---------- HTTP request-path sinks ---------- */
@@ -155,6 +189,24 @@ module UnsafeHttpPathConfig implements DataFlow::ConfigSig {
   predicate isSource(DataFlow::Node source) { isUnsafeDynamicPath(source.asExpr()) }
 
   predicate isSink(DataFlow::Node sink) { sink = httpRequestPath() }
+
+  /**
+   * Propagate a value appended with `+=`. Without this a path accumulated across
+   * statements (`let p = '/api'; p += `/${id}`; http.get(p)`) never reaches the sink,
+   * because plain value flow does not model concatenation.
+   *
+   * Deliberately narrower than `StringConcatenation::taintStep`: that also steps through
+   * every `+` operand, which re-reports a nested concatenation once per sub-expression
+   * (`basePath + '/' + id` sourced both at the whole expression and at `basePath + '/'`).
+   * Plain `AddExpr` nodes are already sources in their own right, so only the compound
+   * assignment needs a step.
+   */
+  predicate isAdditionalFlowStep(DataFlow::Node node1, DataFlow::Node node2) {
+    exists(AssignAddExpr assign |
+      node1 = assign.getRhs().flow() and
+      node2 = [assign.flow(), DataFlow::lvalueNode(assign.getTarget())]
+    )
+  }
 }
 
 module UnsafeHttpPathFlow = DataFlow::Global<UnsafeHttpPathConfig>;
